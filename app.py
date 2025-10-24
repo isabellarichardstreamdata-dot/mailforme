@@ -58,13 +58,15 @@ if os.path.exists(DONE_FILE) and not st.session_state.get("done", False):
             done_info = json.load(f)
         file_path = done_info.get("file")
         if file_path and os.path.exists(file_path):
+            st.session_state["file_path"] = file_path
             st.success("✅ Previous mail merge completed successfully.")
-            st.download_button(
-                "⬇️ Download Updated CSV",
-                data=open(file_path, "rb"),
-                file_name=os.path.basename(file_path),
-                mime="text/csv",
-            )
+            with open(st.session_state["file_path"], "rb") as f:
+                st.download_button(
+                    "⬇️ Download Updated CSV",
+                    data=f,
+                    file_name=os.path.basename(st.session_state["file_path"]),
+                    mime="text/csv",
+                )
             if st.button("🔁 Reset for New Run"):
                 os.remove(DONE_FILE)
                 st.session_state.clear()
@@ -183,85 +185,93 @@ if "done" not in st.session_state:
     st.session_state["done"] = False
 
 # ========================================
-# MAIN UI
+# Sidebar: Settings
 # ========================================
-if not st.session_state["sending"]:
-    st.header("📤 Upload Recipient List")
-    st.info("⚠️ Upload up to **70–80 contacts** for smooth performance.")
-    uploaded_file = st.file_uploader("Upload CSV or Excel", type=["csv", "xlsx"])
-
-    if uploaded_file:
-        if uploaded_file.name.lower().endswith("csv"):
-            df = pd.read_csv(uploaded_file)
-        else:
-            df = pd.read_excel(uploaded_file)
-
-        # Add missing columns
-        for col in ["ThreadId", "RfcMessageId", "Status"]:
-            if col not in df.columns:
-                df[col] = ""
-
-        # Keep full DataFrame but get indices of unsent rows
-        pending_indices = df.index[df["Status"] != "Sent"].tolist()
-
-        st.info("📌 Include 'ThreadId' and 'RfcMessageId' columns for follow-ups if needed.")
-        df = st.data_editor(df, num_rows="dynamic", use_container_width=True)
-
-        # ---------------------------
-        # Template Editor
-        # ---------------------------
-        subject_template = st.text_input("Subject", "Hello {Name}")
-        body_template = st.text_area(
-            "Body",
-            """Dear {Name},
+with st.sidebar:
+    st.header("⚙️ Mail Merge Settings")
+    subject_template = st.text_input("Subject", "Hello {Name}")
+    body_template = st.text_area(
+        "Body",
+        """Dear {Name},
 
 Welcome to **Mail Merge App** demo.
 
 Thanks,  
 **Your Company**""",
-            height=250,
-        )
-        label_name = st.text_input("Gmail label", "Mail Merge Sent")
-        delay = st.slider("Delay (seconds)", 20, 75, 20)
-        send_mode = st.radio("Choose mode", ["🆕 New Email", "↩️ Follow-up (Reply)", "💾 Save as Draft"])
+        height=250,
+    )
+    label_name = st.text_input("Gmail Label", "Mail Merge Sent")
+    delay = st.slider("Delay (seconds)", 20, 75, 20)
+    send_mode = st.radio("Mode", ["🆕 New Email", "↩️ Follow-up (Reply)", "💾 Save as Draft"])
 
-        # ---------------------------
-        # Gmail Template Preview (Below Editor)
-        # ---------------------------
-        if not df.empty:
-            preview_row = df.iloc[0]
-            try:
-                preview_subject = subject_template.format(**preview_row)
-                preview_body = convert_bold(body_template.format(**preview_row))
-            except Exception as e:
-                preview_subject = subject_template
-                preview_body = body_template
-                st.warning(f"⚠️ Could not render preview: {e}")
+# ========================================
+# Tabs: Upload/Edit → Preview → Send
+# ========================================
+tabs = st.tabs(["📄 Upload & Edit", "👀 Preview", "🚀 Send"])
 
-            st.markdown("### 👀 Preview (First Row)")
-            st.markdown(f"**Subject:** {preview_subject}")
-            st.markdown(preview_body, unsafe_allow_html=True)
+# -------------------------------
+# Upload & Edit Tab
+# -------------------------------
+with tabs[0]:
+    uploaded_file = st.file_uploader("Upload CSV or Excel", type=["csv", "xlsx"])
+    df = pd.DataFrame()
+    if uploaded_file:
+        if uploaded_file.name.lower().endswith("csv"):
+            df = pd.read_csv(uploaded_file)
+        else:
+            df = pd.read_excel(uploaded_file)
+        for col in ["ThreadId", "RfcMessageId", "Status"]:
+            if col not in df.columns:
+                df[col] = ""
+        df.reset_index(drop=True, inplace=True)
+        st.info("📌 Include 'ThreadId' and 'RfcMessageId' columns for follow-ups if needed.")
 
-        # ---------------------------
-        # Send Button
-        # ---------------------------
-        if st.button("🚀 Send Emails / Save Drafts"):
-            st.session_state.update({
-                "sending": True,
-                "df": df,
-                "pending_indices": pending_indices,
-                "subject_template": subject_template,
-                "body_template": body_template,
-                "label_name": label_name,
-                "delay": delay,
-                "send_mode": send_mode
-            })
-            st.rerun()
+        # Editable data grid
+        edited_df = st.data_editor(df, num_rows="dynamic", use_container_width=True)
+        df = edited_df.reset_index(drop=True)
+
+        pending_indices = df.index[df["Status"] != "Sent"].tolist()
+
+        st.session_state["df"] = df
+        st.session_state["pending_indices"] = pending_indices
+
+# -------------------------------
+# Preview Tab
+# -------------------------------
+with tabs[1]:
+    if "df" in st.session_state and not st.session_state["df"].empty:
+        df = st.session_state["df"]
+        row_idx = st.selectbox("Preview Row", df.index)
+        try:
+            preview_subject = subject_template.format(**df.loc[row_idx])
+            preview_body = convert_bold(body_template.format(**df.loc[row_idx]))
+        except:
+            preview_subject = subject_template
+            preview_body = body_template
+        st.markdown(f"**Subject:** {preview_subject}")
+        st.markdown(preview_body, unsafe_allow_html=True)
+
+# -------------------------------
+# Send Tab
+# -------------------------------
+with tabs[2]:
+    if "df" in st.session_state and not st.session_state["df"].empty:
+        if not st.session_state.get("sending", False):
+            if st.button("🚀 Send Emails / Save Drafts"):
+                st.session_state.update({
+                    "sending": True,
+                    "subject_template": subject_template,
+                    "body_template": body_template,
+                    "label_name": label_name,
+                    "delay": delay,
+                    "send_mode": send_mode
+                })
+                st.rerun()
 
 # ========================================
 # Sending Mode with Batch Labeling
 # ========================================
-if st.session_state["sending"]:
+if st.session_state.get("sending", False):
     df = st.session_state["df"]
     pending_indices = st.session_state["pending_indices"]
     subject_template = st.session_state["subject_template"]
@@ -280,18 +290,18 @@ if st.session_state["sending"]:
 
     total = len(pending_indices)
     sent_count, skipped, errors = 0, [], []
-
     batch_count = 0
-    sent_message_ids = []  # Collect message IDs for batch labeling
+    sent_message_ids = []
 
     for i, idx in enumerate(pending_indices):
         if send_mode != "💾 Save as Draft" and batch_count >= BATCH_SIZE_DEFAULT:
             break
-        row = df.loc[idx]
+        row = df.iloc[idx]
 
         pct = int(((i + 1) / total) * 100)
         progress.progress(min(max(pct, 0), 100))
-        status_box.info(f"Processing {i + 1}/{total}")
+        eta = (total - i) * delay
+        status_box.info(f"Processing {i+1}/{total} ⏱ ETA: {eta//60} min {eta%60} sec")
 
         to_addr = extract_email(str(row.get("Email", "")).strip())
         if not to_addr:
@@ -323,7 +333,6 @@ if st.session_state["sending"]:
                 msg_body = {"raw": raw}
 
             if send_mode == "💾 Save as Draft":
-                # Lightweight draft creation
                 service.users().drafts().create(userId="me", body={"message": msg_body}).execute()
                 df.loc[idx, "Status"] = "Draft"
                 time.sleep(random.uniform(delay * 0.9, delay * 1.1))
@@ -334,7 +343,7 @@ if st.session_state["sending"]:
                 df.loc[idx, "RfcMessageId"] = fetch_message_id_header(service, msg_id) or msg_id
                 df.loc[idx, "Status"] = "Sent"
                 if send_mode == "🆕 New Email" and label_id:
-                    sent_message_ids.append(msg_id)  # Add to batch list
+                    sent_message_ids.append(msg_id)
                 time.sleep(random.uniform(delay * 0.9, delay * 1.1))
 
             sent_count += 1
@@ -344,7 +353,7 @@ if st.session_state["sending"]:
             errors.append((to_addr, str(e)))
             st.error(f"Error for {to_addr}: {e}")
 
-    # Apply batch label & CSV backup only for sending modes
+    # Save & backup
     if send_mode != "💾 Save as Draft":
         if sent_message_ids and label_id:
             try:
@@ -355,12 +364,14 @@ if st.session_state["sending"]:
             except Exception as e:
                 st.warning(f"Batch labeling failed: {e}")
 
-        # Save and backup full DataFrame
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         safe_label = re.sub(r'[^A-Za-z0-9_-]', '_', label_name)
         file_name = f"Updated_{safe_label}_{timestamp}.csv"
         file_path = os.path.join("/tmp", file_name)
         df.to_csv(file_path, index=False)
+
+        st.session_state["file_path"] = file_path
+
         try:
             send_email_backup(service, file_path)
         except Exception as e:
@@ -377,13 +388,24 @@ if st.session_state["sending"]:
 # ========================================
 # Completion
 # ========================================
-if st.session_state["done"]:
+if st.session_state.get("done", False):
     summary = st.session_state.get("summary", {})
     st.success(f"✅ Process completed. Sent: {summary.get('sent', 0)}")
     if summary.get("errors"):
         st.error(f"❌ {len(summary['errors'])} errors occurred.")
     if summary.get("skipped"):
         st.warning(f"⚠️ Skipped: {summary['skipped']}")
+
+    file_path = st.session_state.get("file_path")
+    if file_path and os.path.exists(file_path):
+        with open(file_path, "rb") as f:
+            st.download_button(
+                "⬇️ Download Updated CSV",
+                data=f,
+                file_name=os.path.basename(file_path),
+                mime="text/csv",
+            )
+
     if st.button("🔁 New Run / Reset"):
         if os.path.exists(DONE_FILE):
             os.remove(DONE_FILE)
